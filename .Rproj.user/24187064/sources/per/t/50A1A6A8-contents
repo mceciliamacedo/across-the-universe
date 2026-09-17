@@ -1,0 +1,1050 @@
+# --- bibliotecas utilizadas
+library(tidyverse)     #manipulação de dados e criação de gráficos
+library(ggbeeswarm)    #extensão do ggplot2
+library(tidytext)      #manipulação de texto
+library(topicmodels)   #modelagem de tópicos
+library(vegan)         #PERMANOVA
+#library(mclust)       #GMM (dá conflito com dplyr, rodar depois)
+library(changepoint)   #detecção do ponto de mudança
+library(RColorBrewer)  #paleta de cores
+library(emmeans)       #testes pairwise
+library(mvnormtest)    #teste de normalidade multivariada
+library(heplots)       #teste de hipóteses
+
+musicas <- read.csv("musicas.csv")
+letras <- read.csv("letras.csv")
+
+musicas <- musicas|>
+  mutate(Period = factor(Period, levels = c("early", "middle", "late")))
+
+letras <- letras|>
+  inner_join(
+    select(musicas, titulo_tratado, Period, Album, Year),
+    by = "titulo_tratado")|>
+  mutate(Period = factor(Period, levels = c("early", "middle", "late")))|>
+  mutate(indice = row_number())
+
+#variáveis acústicas - varíaves que do spotify que serão trabalhadas
+vars_acusticas <- c("Duration", "Tempo", "Valence", 
+                    "Danceability", "Energy", "Loudness", "Acousticness", 
+                    "Instrumentalness", "Liveness", "Speechiness")
+
+#ordem de lançamento dos álbuns
+ordem_albuns <- c("Please Please Me", "With The Beatles", "A Hard Day's Night",
+                  "Beatles For Sale", "Help!", "Rubber Soul", "Revolver",
+                  "Sgt. Pepper's Lonely Hearts Club Band", "Magical Mystery Tour", 
+                  "The Beatles", "Yellow Submarine", "Abbey Road", "Let It Be")
+
+#----------------------------------------------------
+#================ EXPLORAÇÃO INICIAL ================
+#----------------------------------------------------
+{
+#quantidade de músicas por período
+musicas|>
+  count(Period)|>
+  ggplot(aes(x = Period, y = n))+
+  geom_col(fill = "deepskyblue4")+
+  geom_text(aes(label = n, vjust = -0.5), 
+            color = "deepskyblue4", fontface = "bold", alpha = 0.5, size = 6)+
+  labs(title = "the beatles",
+    subtitle = "quantidade de músicas por fase musical",
+    x = "período", y = NULL)+
+  scale_x_discrete(labels = c("early" = "inicial", "middle" = "intermediário",
+                              "late" = "final"))+
+  scale_y_continuous(expand = expansion(mult = c(0.05,0.1)))+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        axis.title = element_text(color = "grey40", hjust = 0, size = 14),
+        axis.ticks = element_blank(),
+        axis.line.x = element_line(color = "grey70", linewidth = 1),
+        axis.text.x = element_text(color = "grey45", size = 12),
+        axis.line.y = element_blank(),
+        axis.text.y = element_blank())
+
+#variabilidade
+musicas|>
+  select(Period, all_of(vars_acusticas))|>
+  pivot_longer(-Period)|>
+  group_by(Period, name)|>
+  summarise(media = mean(value), 
+            desvio = sd(value), .groups = "drop")|>
+  mutate(cv = media/desvio, 
+         variabilidade = case_when(cv < 0.1 ~ "baixa",
+                                   cv > 0.3 ~ "alta",
+                                   .default = "moderada"))
+}
+
+#----------------------------------------------------
+#======================= NLP ========================
+#----------------------------------------------------
+{
+
+#--- léxicos de sentimentos que serão utilizados 
+{
+afinn <- get_sentiments("afinn")
+nrc <- get_sentiments("nrc")
+}
+
+#--- PREPARAÇÃO 
+{
+#contagem de palavras por álbum
+palavras_album <- letras|>
+  unnest_tokens(input = lyrics, output = word)|>
+  group_by(album)|>
+  summarise(qtd_palavras = n(), .groups = "drop")
+
+#tokenização e remoção de stop words
+palavras <- letras|>
+  unnest_tokens(input = lyrics, output = word)|>
+  anti_join(stop_words)
+}
+
+#--- SENTIMENTO MÉDIO 
+{
+#sentimento presente nos álbuns ao longo do tempo (padronizado pela qtd de palavras de cada álbum)
+letras|>
+  unnest_tokens(input = lyrics, output = word)|>
+  inner_join(afinn)|>
+  group_by(album, Period)|>
+  summarise(sentimento = sum(value))|>
+  left_join(palavras_album)|>
+  mutate(sentimento_padronizado = sentimento/qtd_palavras,
+         album = factor(album, levels = rev(ordem_albuns)))|>
+  ggplot(aes(x = sentimento_padronizado, y = album, fill = Period))+
+  geom_col()+
+  labs(title = "evolução do sentimento das letras ao longo dos álbuns",
+       subtitle = "léxico de sentimentos AFINN",
+       x = NULL, y = NULL)+
+  scale_x_continuous(expand = expansion(mult = c(0.02, 0.35)))+
+  scale_fill_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"))+
+  annotate("segment", x = 0.145, y = 8.55, yend = 13.45, size = 1.5,
+           color = "deepskyblue4", alpha = 0.4)+
+  annotate("text", x = 0.15, y = 11, label = "Inicial", hjust = "left",
+           color = "deepskyblue4", fontface = "bold", alpha = 0.4, size = 5)+
+  annotate("segment", x = 0.145, y = 8.45, yend = 4.55, size = 1.5,
+           color = "steelblue3", alpha = 0.4)+
+  annotate("text", x = 0.15, y = 6.5, label = "Intermediário", hjust = "left",
+           color = "steelblue3", fontface = "bold", alpha = 0.4, size = 5)+
+  annotate("segment", x = 0.145, y = 4.45, yend = 0.55, size = 1.5,
+           color = "lightskyblue2", alpha = 0.5)+
+  annotate("text", x = 0.15, y = 2.5, label = "Final", hjust = "left",
+           color = "lightskyblue2", fontface = "bold", alpha = 0.8, size = 5)+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        legend.position = "none",
+        axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey50"),
+        axis.text = element_text(color = "grey40", size = 10))    
+
+#por música
+sentimento_musica <- palavras|>
+  inner_join(afinn)|>
+  group_by(song, Period, album, Year)|>
+  summarise(sentimento = mean(value), .groups = "drop")
+sentimento_musica
+
+#por fase
+sentimento_musica|>
+  group_by(Period)|>
+  summarise(media = mean(sentimento), .groups = "drop")
+
+#boxplot por fase
+sentimento_musica|>
+  mutate(Period = factor(Period, levels = c("early", "middle", "late")))|>
+  ggplot(aes(x = Period, y = sentimento, fill = Period))+
+  geom_boxplot(alpha = 0.6)+
+  geom_quasirandom(width = 0.4, alpha = 0.5, size = 1.2, color = "grey40")+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "darkred",
+             alpha = 0.7, linewidth = 0.3)+
+  labs(title = "sentimento das letras por fase",
+       x = "período", y = "sentimento médio (AFINN)")+
+  scale_x_discrete(labels = c("early" = "inicial", "middle" = "intermediário",
+                              "late" = "final"))+
+  scale_fill_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"))+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        legend.position = "none",
+        axis.title.x = element_text(color = "grey40", size = 12, hjust = 0),
+        axis.title.y = element_text(color = "grey40", size = 11),
+        axis.text = element_text(color = "grey40", size = 11),
+        axis.ticks = element_blank())
+
+#ANOVA
+anova_sent <- aov(sentimento ~ Period, data = sentimento_musica)
+summary(anova_sent) 
+
+emm_sent <- emmeans(anova_sent, ~ Period)
+contrast(emm_sent, method = "pairwise", adjust = "bonferroni")
+#no boxplot foi possível observar que a Fase Intermediária e Final têm distibuição quase idêntica, porém há uma leve diferença ao comparar esses dois períodos com o Inicial. apesar da diferença visual, a ANOVA não aponta evidências significativas de que o sentimento médio entre as fases difere.
+}
+
+#--- COMPOSIÇÃO EMOCIONAL 
+{
+emocoes <- palavras|>
+  inner_join(nrc, relationship = "many-to-many")|>
+  count(Period, sentiment)|>
+  group_by(Period)|>
+  mutate(prop = n/sum(n))
+
+#proporções por fase
+ggplot(emocoes, aes(x = sentiment, y = prop, fill = Period))+
+  geom_col(position = "dodge")+
+  labs(title = "composição emocional das letras por fase",
+       subtitle = "léxico de sentimentos NRC",
+       x = NULL, y = "proporção", fill = NULL)+
+  scale_fill_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"),
+                    labels = c("early" = "inicial", "middle" = "intermediário",
+                               "late" = "Final"))+
+  scale_x_discrete(labels = c("anger" = "raiva", "trust" = "confiança",
+                              "anticipation" = "expectativa", "disgust" = "nojo",
+                              "fear" = "medo", "joy" = "alegria",
+                              "negative" = "negativo", "positive" = "positivo",
+                              "sadness" = "tristeza", "surprise" = "surpresa"))+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        legend.position = c(1,1),
+        legend.justification = c("right", "top"),
+        legend.text = element_text(color = "grey40", size = 10),
+        legend.text.position = "left",
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(color = "grey40", size = 12, hjust = 1),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+}
+  
+#--- TF-IDF 
+{
+letras|>
+  mutate(Period = case_when(Period == "early" ~ "Inicial",
+                            Period == "middle" ~ "Intermediário",
+                            Period == "late" ~ "Final"))|>
+  mutate(Period = factor(Period, 
+                         levels = c("Inicial", "Intermediário", "Final")))|>
+  unnest_tokens(input = lyrics, output = word)|>
+  group_by(Period)|>
+  count(word)|>
+  bind_tf_idf(term = word, document = Period, n)|>
+  slice_max(tf_idf, n = 15)|>
+  ungroup()|>
+  mutate(word = reorder_within(word, by = tf_idf, Period))|>
+  ggplot(aes(x = tf_idf, y = word, fill = Period))+
+  geom_col(show.legend = FALSE)+
+  labs(title = "palavras mais características de cada período",
+       subtitle = "TF-IDF",
+       x = NULL, y = NULL)+
+  facet_wrap(~ Period, scales = "free_y")+
+  scale_y_reordered()+
+  scale_fill_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"))+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        strip.text = element_text(color = "grey40", size = 12, hjust = 0),
+        panel.grid = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line.y = element_line(color = "grey40"))
+
+
+#ao verficar as palavras mais importantes de cada período com o tf-idf, é notavel a predominancia o usi de interjeições na primeira fase da banda e palavras que remetem a um amor "simples" (kiss, falling, honey, boys).
+#as palavras caracteristicas da fase intermediária são compostas por trechos marcartes de musicas bastante caracteristica desse período.
+#o periodo final se assemelha de certa maneira ao inicial, as palavras mais importantes em sua maioria não são necessariamente palavras. diferentemente do periodo inicial, que era predominante as interjeições, agora oq predomina são as vocalizações, técnica essa muito utilizada para complementar a experimentação musical, uma caracteristica marcante dessa fase
+
+# TF-IDF sem as stop words identificadas
+stopwords_custom <- c("uh", "gotta", "goo", "joob", "9", 
+                      "bom", "ob", "mi", "mm", "number", "doo", "beep", "di")
+
+palavras_clean <- palavras|>
+  filter(!word %in% stopwords_custom)
+
+palavras_clean|>
+  count(Period, word, sort = TRUE)|>
+  bind_tf_idf(word, Period, n)|>
+  group_by(Period)|>
+  slice_max(tf_idf, n = 15)|>
+  ungroup()|>
+  mutate(word = reorder_within(word, tf_idf, Period),
+         Period = factor(Period, levels = c("early", "middle", "late")))|>
+  ggplot(aes(x = tf_idf, y = word, fill = Period))+
+  geom_col(show.legend = FALSE)+
+  labs(title = "palavras mais características de cada período",
+       subtitle = "TF-IDF",
+       x = NULL, y = NULL)+
+  facet_wrap(~ Period, scales = "free_y")+
+  scale_y_reordered()+
+  scale_fill_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"))+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        strip.text = element_text(size = 10, color = "grey40", hjust = 0),
+        panel.grid = element_blank(),
+        axis.title = element_text(color = "grey40"),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(color = "grey40"),
+        axis.ticks = element_blank(),
+        axis.line.x = element_blank(),
+        axis.line.y = element_line(color = "grey50"))
+}
+
+#--- LDA 
+{
+#document-term matrix - linhas: documentos; 
+#                       colunas: palavras; 
+#                       valores preenchidos: nº de vezes que uma palavra aparece 
+#                                            em um documento
+matriz_dtm <- palavras|>
+  group_by(song, Period)|>
+  count(word)|>
+  unite(document, song, Period)|>
+  cast_dtm(document = document, term = word, value = n)
+
+#modelo
+topicos <- LDA(matriz_dtm, k = 5, control = list(seed = 1742)) 
+
+#probabilidades por tópico por palavra
+probs_palavras <- tidy(topicos, matrix = "beta") #P(palavra|topico)
+probs_documentos <- tidy(topicos, matrix = "gamma") #P(topico|documento)
+
+#probabilidade de uma palavra em um tópico
+probs_palavras|>
+  group_by(topic)|>
+  slice_max(order_by = beta, n = 10)|>
+  ungroup()|> 
+  mutate(nome_topicos = case_when(topic == 1 ~ "1. afeto singelo",
+                                  topic == 2 ~ "2. interjeições",
+                                  topic == 3 ~ "3. amor",
+                                  topic == 4 ~ "4. psicodelia",
+                                  topic == 5 ~ "5. experiências temporais"))|>
+  ggplot(aes(x = beta, y = reorder_within(term, beta, topic), 
+             fill = factor(topic)))+
+  geom_col(show.legend = FALSE)+
+  labs(title = "termos mais prováveis em cada tópico",
+       subtitle = "latent dirichlet allocation (LDA)",
+       x = "P(palavra|tópico)", y = NULL)+
+  facet_wrap(~ nome_topicos, scales = "free")+
+  scale_x_continuous(labels = scales::number_format(accuracy = 0.01))+
+  scale_y_reordered()+
+  scale_fill_manual(values = brewer.pal(n = 6, name = "Blues")[2:6])+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        strip.text = element_text(color = "grey40", size = 12, hjust = 0),
+        axis.title = element_text(color = "grey40", size = 11, hjust = 0.066),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank())
+
+#probabilidade de um tópico em um documento
+probs_documentos|>
+  separate(document, c("title", "period"), sep = "_")|>
+  mutate(period = reorder(period, gamma * topic),
+         topic = as.factor(topic))|>
+  mutate(period = case_when(period == "early" ~ "inicial",
+                            period == "middle" ~ "intermediário",
+                            period == "late" ~ "final"))|>
+  mutate(period = factor(period, 
+                         levels = c("inicial", "intermediário", "final")))|>
+  ggplot(aes(x = topic, y = gamma, color = topic))+
+  geom_boxplot(show.legend = FALSE,
+               outliers = FALSE)+
+  geom_quasirandom(aes(color = topic), 
+                   width = 0.4, alpha = 0.5, size = 1, show.legend = FALSE)+
+  labs(title = "probabilidade dos tópicos",
+       subtitle = "em cada documento",
+    x = "tópico", y = "P(tópico|documento)")+
+  facet_wrap(~ period)+
+  scale_color_manual(values = brewer.pal(n = 6, name = "Blues")[2:6])+
+  theme_bw()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        strip.text = element_text(color = "grey40", size = 12, hjust = 0),
+        strip.background = element_blank(),
+        axis.title = element_text(color = "grey40", size = 11, hjust = 0),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank())
+
+#-- USANDO A DIVISÃO ENCONTRADA --
+cisao <- letras$indice[letras$album == "Sgt. Pepper's Lonely Hearts Club Band"][1]
+
+lda_2fases <- letras|>
+  mutate(fase_estilistica = ifelse(indice < cisao, 
+                                   "fase clássica", "fase experimental"))
+
+duasfases_dtm <- lda_2fases|>
+  select(song, lyrics, fase_estilistica)|>
+  unnest_tokens(input = lyrics, output = word)|>
+  anti_join(stop_words)|>
+  group_by(song, fase_estilistica)|>
+  dplyr::count(word)|>
+  unite(document, song, fase_estilistica)|>
+  cast_dtm(document = document, term = word, value = n)
+
+topicos_lda2 <- LDA(duasfases_dtm, k = 5, control = list(seed = 1742))
+
+probs_docs2 <- tidy(topicos_lda2, matrix = "gamma")
+
+probs_docs2|>
+  separate(document, c("title", "fase"), sep = "_")|>
+  mutate(period = reorder(fase, gamma * topic),
+         topic = as.factor(topic))|>
+  ggplot(aes(x = topic, y = gamma, color = topic))+
+  geom_boxplot(show.legend = FALSE,
+               outliers = FALSE)+
+  geom_quasirandom(aes(color = topic), 
+                   width = 0.4, alpha = 0.5, size = 1, show.legend = FALSE)+
+  labs(title = "probilidade dos tópicos por documento em cada fase",
+       subtitle = "de acordo as feses estilísticas encontradas",
+    x = "tópico", y = "P(tópico|documento)")+
+  facet_wrap(~ period)+
+  scale_color_manual(values = brewer.pal(n = 6, name = "Blues")[2:6])+
+  theme_bw()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        strip.text = element_text(color = "grey40", size = 12, hjust = 0),
+        strip.background = element_blank(),
+        axis.title = element_text(color = "grey40", size = 11, hjust = 0),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank())
+
+}
+}
+
+#----------------------------------------------------
+#========= ANÁLISE DE COMPONENTE PRINCIPAIS =========
+#----------------------------------------------------
+{
+#padronização dos dados
+pca_dados <- musicas|>
+  select(all_of(vars_acusticas))|>
+  scale()
+
+#pca
+pca <- prcomp(pca_dados)
+summary(pca)
+#são necessárias sete componentes para explicar aproximademente 90% da variabilidade do conjunto.
+
+#correlação
+musicas|>
+  select(all_of(vars_acusticas))|>
+  cor()|>
+  round(2)|>
+  data.frame()|>
+  rownames_to_column("var1")|>
+  pivot_longer(-var1, names_to = "var2")|>
+  ggplot(aes(x = var1, y = var2, fill = value))+
+  geom_tile()+
+  labs(title = "correlação entre as variáveis acústicas",
+    x = NULL, y = NULL, fill = NULL)+
+  scale_x_discrete(labels = c("Valence" = "Pos. Musical", "Tempo" = "BPM",
+                              "Speechiness" = "Pres. Fala", "Loudness" = "Volume",
+                              "Liveness" = "Vivacidade",
+                              "Instrumentalness" = "Instrument.",
+                              "Energy" = "Energia", "Duration" = "Duração",
+                              "Danceability" = "Dançab.", 
+                              "Acousticness" = "Acusticidade"))+
+  scale_y_discrete(labels = c("Valence" = "Positividade Musical", "Tempo" = "BPM",
+                              "Speechiness" = "Presença de Fala", 
+                              "Loudness" = "Volume", "Liveness" = "Vivacidade",
+                              "Instrumentalness" = "Instrumentalidade",
+                              "Energy" = "Energia", "Duration" = "Duração",
+                              "Danceability" = "Dançabilidade", 
+                              "Acousticness" = "Acusticidade"))+
+  scale_fill_gradient2(low = "darkred", mid = "whitesmoke", high = "deepskyblue4",
+                       breaks = c(-1, 0, 1),
+                       limits = c(-1, 1))+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        panel.grid = element_blank(),
+        legend.text = element_text(color = "grey45", size = 8),
+        axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 9, color = "grey45"))
+
+#existe pouco correlação entre as variáveis acústicas, por isso a dimensionalidade do conjunto não é reduzida dresticamente.
+
+#loadings das três primeiras componentes
+round(pca$rotation[,1:3],2)
+
+#gráfico de elipse
+scores <- data.frame(pca$x)
+
+scores <- scores|>
+  mutate(Period = musicas$Period)
+
+ggplot(scores, aes(x = PC1, y = PC2, color = Period))+
+  geom_point()+
+  stat_ellipse(level = .68)+
+  labs(title = "PCA — variáveis acústicas por período",
+       color = NULL)+
+  scale_color_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"),
+                     labels = c("early" = "inicial", "middle" = "intermediário",
+                                "late" = "final"))+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        legend.position = c(1, 0.065),
+        legend.justification = "right",
+        legend.text = element_text(color = "grey40", size = 11),
+        legend.direction = "horizontal",
+        axis.title = element_text(color = "grey40", size = 12),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+
+#ao traçar a disperção das músicas utilizando as primeiras duas componentes e verificar onde cada período se encontra, é possível notar que a fase inicial é a mais homogênea e a final a mais diversificada. as elipses representam a menor área que contém 68% das músicas de cada período, com o auxilio delas é possível perceber que a fase intermediária é praticamente um subconjunto da final. por esse motivo, talvez a separação em duas fases seja a mais adequada
+}
+
+#----------------------------------------------------
+#==================== PERMANOVA =====================
+#----------------------------------------------------
+{
+#a pca mostrou que talvez a divisão em três períodos não é a estatisticamente mais adequada. agora serão feitos testes para investigar essa hipótese.   
+  
+set.seed(42)  
+
+Y <- musicas|>
+  select(all_of(vars_acusticas))|>
+  as.matrix()
+
+#--- MANOVA - verificanco pressupostos
+
+#normalidade multivariada - violado
+musicas|>
+  select(all_of(vars_acusticas))|>
+  t()|>
+  as.matrix()|>
+  mshapiro.test() #os dados não seguem uma distribuição normal multivariada
+
+#homogeneidade das matrizes de covariância - violado
+periodo <- factor(musicas$Period)
+
+musicas|>
+  select(all_of(vars_acusticas))|>
+  boxM(group = periodo) #não há homogeneidade nas matrizes de covariâncias
+
+#como a manova se mostrou ineficiente para testar a significancia da divisão das canções dos beatles em períodos, a permanova surge com uma alternativa não paramétrica. a partir dela é possivel identificar se existe separação devido a variabilidade dos grupos.
+
+#--- PERMANOVA
+permanova <- adonis2(Y ~ Period, data = musicas, method = "euclidian", permutations = 999)
+
+#o teste foi significativo. portanto, há evidências que contribuem acerca da existência de uma divisão da discografia dos beatles em períodos. mas o teste não nos diz onde essa diferença ocorre. todas as fases são diferentes entre si? existes fases que não diferem entre si? para responder isso, será realizado o teste novamente, mas comparando par a par. porém é preciso cuidado ao realizar esses teste, visto que se utililizar 5% como nível de significância a probabilidade de um erro tipo I é de 14,26%, para que isso seja corrigido, é necessário fazer uma correção no nivel de significancia, portanto a partir de agora o nivel considerado será α = 1.7% (= 0.017).
+
+#probabilidade de erro caso use 5% de segnificancia nos 3 testes, ou seja, probabilidade de que ocorra pelo menos um erro de 0.05 de probabilidade 
+sum(dbinom(1:3, 3, 0.05))
+
+#early x middle
+idx_em <- musicas$Period %in% c("early", "middle")
+adonis2(Y[idx_em,] ~ Period, data = musicas[idx_em,],
+        method = "euclidian", permutations = 999)
+#a 0,017 de significancia, a diferença entre os periodos early e middle é significativa.
+
+#early x late
+idx_el <- musicas$Period %in% c("early", "late")
+adonis2(Y[idx_el,] ~ Period, data = musicas[idx_el,],
+        method = "euclidian", permutations = 999)
+#a 0,017 de significancia, a diferença entre os periodos early e late é significativa.
+
+#middle x late
+idx_ml <- musicas$Period %in% c("middle", "late")
+adonis2(Y[idx_ml,] ~ Period, data = musicas[idx_ml,],
+        method = "euclidian", permutations = 999)
+#a 0,017 de significancia, a diferença entre os periodos middle e late NÃO é significativa.
+
+#o período inicial difere dos demais, porém os períodos intermediário e final não possuem diferença significativa, portanto a permanova corroborou com os indicios da pca de que talvez a melhor divisão em períodos a ser usada é em dois períodos, e não a usual de tres  fases.
+
+
+#agora vamos testar a diferença geral entre a fase inicial e as musicas que foram lançadas após ela.
+musicas <- musicas|>
+  mutate(Period2 = ifelse(Period == "early", "early", "post1965"))
+
+adonis2(Y ~ Period, data = musicas, method = "euclidian", permutations = 999)
+adonis2(Y ~ Period2, data = musicas, method = "euclidian", permutations = 999) #explica um pouco menos, porém é mais simples.
+
+#--- verificando com diferentes distâncias
+#os resultados obtidos foram levando em conta a distância mais comum, a euclidiana. mas eles se mantêm se trocarmos o método do calculo de distâncias? se os resultados nao se alterarem, podemos concluir que eles são consistentes.
+
+adonis2(Y ~ Period, data = musicas, method = "euclidian", permutations = 999)
+adonis2(Y ~ Period, data = musicas, method = "manhattan", permutations = 999)
+adonis2(Y ~ Period, data = musicas, method = "gower", permutations = 999)
+
+#par a par
+adonis2(Y[idx_em,] ~ Period, data = musicas[idx_em,], 
+        method = "manhattan", permutations = 999)
+adonis2(Y[idx_em,] ~ Period, data = musicas[idx_em,], 
+        method = "gower", permutations = 999)
+
+adonis2(Y[idx_el,] ~ Period, data = musicas[idx_el,], 
+        method = "manhattan", permutations = 999)
+adonis2(Y[idx_el,] ~ Period, data = musicas[idx_el,], 
+        method = "gower", permutations = 999)
+
+adonis2(Y[idx_ml,] ~ Period, data = musicas[idx_ml,], 
+        method = "manhattan", permutations = 999)
+adonis2(Y[idx_ml,] ~ Period, data = musicas[idx_ml,], 
+        method = "gower", permutations = 999)
+#independente da distância usada os resultados se mantiveram, portanto são consistentes
+}
+
+#----------------------------------------------------
+#======================= GMM ========================
+#----------------------------------------------------
+{
+library(mclust)
+  
+dados_gmm <- musicas|> 
+  select(all_of(vars_acusticas))|>
+  scale()
+
+#encontrando os melhores modelos gmm
+gmm_bic <- mclustBIC(dados_gmm, G = 1:6)
+summary(gmm_bic)
+
+bic_mat <- unclass(gmm_bic)
+attr(bic_mat, "criterion") <- NULL
+
+modelos <- as.data.frame(bic_mat)|> 
+  mutate(G = as.integer(rownames(bic_mat)))|>
+  pivot_longer(cols = -G, names_to = "modelo", values_to = "BIC")|>
+  mutate(melhor_modelo = ifelse(modelo %in% c("VVV", "VVE", "VVI"), "1", "0"))
+
+melhores_modelos <- modelos|>
+  filter(melhor_modelo == "1")
+
+outros_modelos <- modelos|>
+  filter(melhor_modelo != "1")
+
+ggplot()+
+  geom_line(data = outros_modelos, mapping = aes(x = G, y = BIC, group = modelo),
+            linewidth = 0.3, color = "grey40", alpha = 0.5)+
+  geom_line(data = melhores_modelos, mapping = aes(x = G, y = BIC, color = modelo),
+            linewidth = 1.1, alpha = 0.8)+
+  labs(title = "seleção do número de componentes via BIC",
+       x = "nº de componentes", y = "BIC", 
+       color = "modelo", linewidth = NULL)+
+  scale_color_manual(values = c("lightskyblue2", "steelblue3", "deepskyblue4"))+
+  scale_linewidth_manual(values = c("0" = 0.7, "1" = 1.2))+
+  scale_x_continuous(breaks = 1:6)+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        legend.position = c(.97,.95),
+        legend.justification = c("right", "top"),
+        legend.title = element_text(color = "grey40", size = 11),
+        legend.text = element_text(color = "grey40", size = 10),
+        legend.text.position = "left",
+        axis.title = element_text(color = "grey40", size = 12, hjust = 0),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+
+gmm_bic[2,"VVI"] #modelo VVI, k = 2
+gmm_bic[3,"VVV"] #modelo VVV, k = 3
+
+#ajuste dos modelos
+gmm_vvi <- Mclust(dados_gmm, G = 2, modelNames = "VVI")
+gmm_vvv <- Mclust(dados_gmm, G = 3, modelNames = "VVV")
+
+#quantidade de músicas pertencentes a cada componente
+summary(gmm_vvi)
+summary(gmm_vvv)
+
+table(gmm_vvi$classification)
+table(gmm_vvv$classification)
+
+#distrubuição dos clusters pela fase histórica
+table(gmm_vvi$classification, fase = musicas$Period)
+table(gmm_vvv$classification, fase = musicas$Period)
+
+#média dos componentes
+gmm_vvi$parameters$mean|>
+  as.data.frame()|>
+  setNames(c("cluster1", "cluster2"))|>
+  round(4)
+#neste modelo, o primeiro cluster é regido pela instrumentalidade, presença de fala e duração das músicas, estas são características marcantes da experimentação musical. já o segundo cluster predomina a positividade musical, como foi visto, essa é uma característica mais presente na fase inicial dos beatles.
+
+gmm_vvv$parameters$mean|>
+  as.data.frame()|>
+  setNames(c("cluster1", "cluster2", "cluster3"))|>
+  round(4)
+#cluster 1: características experimentais (instrumentalidade, vivacidae, presença de fala) predominam fortemente
+#cluster 2: médias muito próximas de 0, canções mais neutras (?), mas tempo e duração predominam esse agrupamento, sendo também características experimentais
+#cluster 3: aqui quase todos os sinais se invertem em comparação aos outros dois grupos. assim como o cluster 2 do modelo de duas componentes esse agrupamento predomina a positividade musical e outro elementos que remetem a músicas alégres.
+
+#aparentemente o modelo com 3 componentes está captando a heterogeneidade presente após a fase inicial da banda.
+
+#gambiarra para entender se as musicas dos clusters experimentais do modelo com 3 componentes estão sendo classificadas no cluster experimental do modelo com 2 componente
+musicas|>
+  mutate(cluster_vvi = factor(gmm_vvi$classification),
+         cluster_vvv = factor(gmm_vvv$classification),
+         Album = factor(Album, levels = ordem_albuns))|> 
+  mutate(status_cluster = case_when((cluster_vvi == 1 & (cluster_vvv == 1 | cluster_vvv == 2))
+                                    ~ "de acordo (exp)",
+                                    (cluster_vvi == 2 & (cluster_vvv == 2 | cluster_vvv == 2))
+                                    ~ "dif",
+                                    (cluster_vvi == 2 & cluster_vvv == 3 
+                                    ~ "de acordo (early)"),
+                                    .default = "dif"))|>
+  select(Title, cluster_vvi, cluster_vvv, Period, status_cluster)|>
+  dplyr::count(status_cluster)
+
+#das 184 músicas, há apenas 15 que a classificação diverge entre os modelos ajustados. dessa maneira, aproximadamente 92% das classificações estão de acordo entre os modelos, portanto, não são muito diferentes. portanto, utilizarei o modelo com duas componentes.
+
+#distribuição por álbum dos clusters 1 e 2
+musicas|>
+  mutate(cluster_vvi = factor(gmm_vvi$classification),
+         cluster_vvv = factor(gmm_vvv$classification),
+         Album = factor(Album, levels = ordem_albuns))|> 
+  filter(cluster_vvv %in% c("1", "2"))|>
+  dplyr::count(Album, cluster_vvv)
+
+#MODELO ESCOLHIDO
+gmm_fit <- gmm_vvi
+summary(gmm_fit)
+
+#proporção de músicas de cada componente
+gmm_fit$parameters$pro
+
+#vetor de médias - perfil acustico médio de cada componente
+gmm_fit$parameters$mean|>
+  data.frame()|>
+  setNames(c("experimental", "convencional"))|>
+  mutate(diff = abs(abs(convencional) - abs(experimental)))|>
+  round(2)
+
+#como visto, no cluster 1 se encontram as músicas mais experimentais, nele a duração das músicas e a instrumentalidade são as características mais dominantes. já o cluster 2 tudo que antes era negativo passa a ser positivo. as caracteristicas mais marcantes desse agrupamento é a valencia (positividade musical), dançabilidade e o volume da músicas. é interessante pontuar que as maiores diferenças em módulo é a valencia e a instrumentalidade, que são as caracteristicas mais marcantes das duas fases da banda.
+
+#--- comportamento dos clusters em relação a fase histórica da banda
+musicas <- musicas|>
+  mutate(cluster_gmm = factor(gmm_fit$classification,
+                              labels = c("experimental", "clássico")))
+
+table(cluster = musicas$cluster_gmm, Fase = musicas$Period)
+#aqui fica claro que o período intermediário da banda é uma fase de transição musical. visto que ela fica relativamente bem dividida entre os clusters, diferentemente das outras duas fases, a inicial prevalece no cluster 2 e a final no cluster 1
+
+#--- visualização dos clusters
+ggplot(musicas, aes(x = Valence, y = Instrumentalness, color = cluster_gmm))+
+  geom_point(alpha = 0.5, size = 2.5)+
+  labs(title = "clusters GMM",
+       subtitle = "no espaço positividade musical x instrumentalidade",
+       color = "perfil",
+       x = "positividade musical", y = "instrumentalidade")+
+  scale_color_manual(values = c("firebrick", "deepskyblue4"))+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        legend.title = element_text(color = "grey40", size = 12),
+        legend.position = "bottom",
+        legend.justification = "left",
+        legend.text = element_text(color = "grey40", size = 10),
+        axis.title = element_text(color = "grey40", size = 11, hjust = 1),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank())
+
+
+#--- probabilidades posteriores
+#prob. de estar em um cluster. valores proximos de 1 indicam pertencimento claro e proximo de 0,5 estão proximos da fronteira entre os clusters.
+probs_post <- gmm_fit$z|> 
+  data.frame()|>
+  setNames(c("p_experimental", "p_convencional"))|>
+  mutate(titulo = musicas$titulo_tratado,
+         Period = musicas$Period,
+         cluster = musicas$cluster_gmm,
+         incerteza = 1 - pmax(p_experimental, p_convencional))
+
+#incerteza média por fase
+probs_post|>
+  group_by(Period)|>
+  summarise(incerteza_media = mean(incerteza),
+            incerteza_max = max(incerteza),
+            n_incertas = sum(incerteza > 0.10))
+
+probs_post|>
+  filter(incerteza > 0.1)
+
+#10 músicas mais típicas de cada perfil
+probs_post|>
+  arrange(p_experimental)|>
+  dplyr::select(titulo, Period, p_experimental, p_convencional)|>
+  head(20)|>
+  print()
+
+probs_post|>
+  arrange(desc(p_experimental)) |>
+  dplyr::select(titulo, Period, p_experimental, p_convencional) |>
+  head(20) |>
+  print()
+
+#visualização da incerteza em escala logaritmica
+ggplot(probs_post, aes(x = Period, y = incerteza + 1e-6, 
+                                    fill = Period))+
+  geom_boxplot(alpha = 0.7, outliers = FALSE)+
+  geom_quasirandom(width = 0.4, alpha = 0.5, size = 1.2, color = "grey20")+
+  scale_x_discrete(labels = c("early" = "inicial", "middle" = "intermediário",
+                              "late" = "final"))+
+  scale_y_log10(breaks = c(1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1),
+                labels = c("~0", "10⁻⁵", "10⁻⁴", "10⁻³", "10⁻²", "0.1"))+
+  scale_fill_manual(values = c("deepskyblue4", "steelblue3", "lightskyblue2"))+
+  labs(title = "incerteza de pertencimento por fase (GMM)",
+       subtitle = "escala logarítmica", 
+       x = NULL, y = "incerteza (1 - prob. máxima)")+
+  theme_minimal()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        legend.position = "none",
+        axis.title = element_text(color = "grey40", hjust = 1, size = 12),
+        axis.text.x = element_text(color = "grey40", size = 11),
+        axis.text.y = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank())
+
+#--- distribuição cronológica dos clusters
+
+#prop. de musicas do perfil convencional de cada álbum
+
+proporcoes <- musicas|>
+  mutate(Album = factor(Album, levels = ordem_albuns))|>
+  dplyr::count(Album, cluster_gmm)|>
+  group_by(Album)|>
+  mutate(prop = n/sum(n))|>
+  ungroup()|>
+  filter(cluster_gmm == "clássico")|>
+  mutate(idx = row_number())
+
+#proporções por album
+musicas|>
+  mutate(Album = factor(Album, levels = ordem_albuns))|>
+  dplyr::count(Album, cluster_gmm)|>
+  pivot_wider(names_from = cluster_gmm, values_from = n, values_fill = 0)|>
+  mutate(prop_convencional = clássico / (experimental + clássico))
+
+#trajetória cronológica
+ggplot(proporcoes, aes(x = idx, y = prop))+
+  geom_line(linewidth = 0.8, color = "grey70")+
+  geom_point(size = 2, color = "deepskyblue4")+
+  geom_text(aes(label = Album), hjust = 0, nudge_y = 0.03, size = 3, color = "grey20")+
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "darkred", alpha = 0.5)+
+  labs(title = "proporção do perfil convencional por álbum",
+       subtitle = "GMM com k = 2",
+       x = "álbum (ordem cronológica)", y = "proporção convencional")+
+  scale_x_continuous(breaks = 1:13, limits = c(1,15))+
+  scale_y_continuous(labels = scales::percent, limits = c(0,1.05))+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        axis.title = element_text(color = "grey40", size = 12),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+
+embaixo <- c("Please Please Me", "Beatles For Sale", "Revolver", "The Beatles",
+             "Abbey Road")
+df_embaixo <- proporcoes|>
+  filter(Album %in% embaixo)
+df_emcima <- proporcoes|>
+  filter(!Album %in% embaixo & Album != "Yellow Submarine" & Album != "With The Beatles")
+df_esquerda <- proporcoes|>
+  filter(Album == "With The Beatles")
+df_ys <- proporcoes|>
+  filter(Album == "Yellow Submarine")
+
+trajetoria <- ggplot()+
+  geom_hline(yintercept = 0.5, linetype = "dashed", 
+             color = "darkred", alpha = 0.5)+
+  geom_line(data = proporcoes, mapping = aes(x = idx, y = prop),
+            linewidth = 0.8, color = "grey70")+
+  geom_point(data = proporcoes, mapping = aes(x = idx, y = prop),
+             size = 2, color = "deepskyblue4")+
+  geom_text(data = df_embaixo, aes(x = idx, y = prop, label = Album),
+            hjust = 0.2, nudge_y = -0.04, size = 3, color = "grey20")+
+  geom_text(data = df_emcima, aes(x = idx, y = prop, label = Album),
+            hjust = 0, nudge_y = 0.04, size = 3, color = "grey20")+
+  geom_text(data = df_esquerda, aes(x = idx, y = prop, label = Album),
+            hjust = 1, nudge_y = 0.04, size = 3, color = "grey20")+
+  geom_text(data = df_ys, aes(x = idx, y = prop, label = Album),
+            nudge_y = 0.04, size = 3, color = "grey20")+
+  labs(title = "trajetória da proporção do perfil clássico por álbum",
+       x = "álbum", y = "proporção do perfil clássico")+
+  scale_x_continuous(breaks = 1:13, limits = c(0.5,14))+
+  scale_y_continuous(labels = scales::percent, limits = c(0,1.05))+
+  annotate("text", label = "fase experimental", x = 2.5, y = 0.125,
+           fontface = "bold", size = 6, alpha = 0.28)+
+  annotate("text", label = "fase clássica", x = 13, y = 0.95,
+           fontface = "bold", size = 6, alpha = 0.28)+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        axis.title = element_text(color = "grey40", size = 11, hjust = 1),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+}
+
+#----------------------------------------------------
+#============== CHANGEPOINT DETECTION ===============
+#----------------------------------------------------
+{
+vars_musicas <- names(musicas)
+
+musicas_ordem <- musicas|>
+  inner_join(
+    dplyr::select(letras, titulo_tratado, indice), by = "titulo_tratado")|>
+  select(all_of(vars_musicas), indice)|>
+  arrange(indice)
+
+titulos_ordem <- musicas_ordem|>
+  pull(titulo_tratado)
+
+scores_ordenados <- pca$x[match(titulos_ordem, musicas$titulo_tratado),]
+
+df_scores <- musicas_ordem|>
+  select(indice, Title)|>
+  mutate(pc1 = scores_ordenados[,"PC1"],
+         pc2 = scores_ordenados[,"PC2"],
+         pc3 = scores_ordenados[,"PC3"])
+
+#changepoint - componete 1
+change_pc1 <- cpt.mean(scores_ordenados[,"PC1"], 
+                       method = "PELT", penalty = "MBIC")
+
+change1 <- cpts(change_pc1)
+par_change1 <- change_pc1@param.est[[1]] #parametro da mudança
+musicas_change1 <- musicas_ordem$Title[change1]
+
+ggplot(df_scores, aes(x = indice, y = pc1))+
+  geom_line(linewidth = 0.4)+
+  labs(#title = "ruptura da empolgação sonora",
+    x = "músicas (índice cronológico)",
+    y = "PC1 - empolgação sonora")+
+  annotate("segment", x = 0, xend = change1, y = par_change1[1],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change1, xend = 184, y = par_change1[2],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change1, y = -4, yend = 3,
+           color = "darkred", linetype = "dashed", linewidth = 0.7)+
+  annotate("text", label = musicas_change1, x = change1 - 1, y = -3.9,
+           color = "darkred", fontface = "bold", hjust = "right")+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        axis.title = element_text(color = "grey40", size = 12, hjust = 1),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+
+#changepoint - componete 2
+change_pc2 <- cpt.mean(scores_ordenados[,"PC2"], 
+                       method = "PELT", penalty = "MBIC")
+
+change2 <- cpts(change_pc2)
+par_change2 <- change_pc2@param.est[[1]] #parametro da mudança
+musicas_change2 <- musicas_ordem$Title[change2]
+
+ggplot(df_scores, aes(x = indice, y = pc2))+
+  geom_line(linewidth = 0.4)+
+  labs(title = "ruptura do dinamismo musical",
+    x = "músicas (índice cronológico)",
+    y = "PC2 - dinamismo musical")+
+  annotate("segment", x = 0, xend = change2[1], y = par_change2[1],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change2[1], xend = change2[2], y = par_change2[2],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change2[2], xend = change2[3], y = par_change2[3],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change2[3], xend = change2[4], y = par_change2[4],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change2[4], xend = change2[5], y = par_change2[5],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change2[5], xend = 184, y = par_change2[6],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  
+  annotate("segment", x = change2[1], y = -4, yend = 3,
+           color = "tomato4", linewidth = 0.7, linetype = "dashed")+
+  annotate("segment", x = change2[2], y = par_change2[2], yend = 3.5,
+           color = "tomato4", linewidth = 0.7, linetype = "dashed")+
+  annotate("segment", x = change2[3], y = -8.5, yend = par_change2[3],
+           color = "tomato4", linewidth = 0.7, linetype = "dashed")+
+  annotate("segment", x = change2[4], y = par_change2[4], yend = 3.3,
+           color = "tomato4", linewidth = 0.7, linetype = "dashed")+
+  annotate("segment", x = change2[5], y = -9, yend = par_change2[5],
+           color = "tomato4", linewidth = 0.7, linetype = "dashed")+
+  
+  annotate("text", label = musicas_change2[1], x = change2[1] - 2, y = -4,
+           color = "tomato4", hjust = "right", vjust = "bottom")+
+  annotate("text", label = musicas_change2[2], x = change2[2] - 2, y = 3.5,
+           color = "tomato4", hjust = "right", vjust = "top")+
+  annotate("text", label = musicas_change2[3], x = change2[3] - 2, y = -8.5,
+           color = "tomato4", fontface = "bold", hjust = "right", vjust = "bottom")+
+  annotate("text", label = musicas_change2[4], x = change2[4] + 2, y = 3.3,
+           color = "tomato4", hjust = "left", vjust = "top")+
+  annotate("text", label = musicas_change2[5], x = change2[5] + 2, y = -9,
+           color = "tomato4", fontface = "bold", hjust = "left", vjust = "bottom")+
+  
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        axis.title = element_text(color = "grey40", size = 12, hjust = 1),
+        axis.text = element_text(color = "grey40", size = 10),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey40"))
+
+#considerando helter skelter e revolution 9 como outliers
+outliers_pc2 <- c(144,150)
+
+change_pc2_outliers <- cpt.mean(scores_ordenados[-outliers_pc2,"PC2"],
+                                method = "PELT", penalty = "MBIC")
+
+change2_outliers <- cpts(change_pc2_outliers)
+novos_par_change2 <- change_pc2_outliers@param.est[[1]]
+musicas_change2 <- musicas_ordem$Title[change2_outliers]
+
+cgp2 <- ggplot(df_scores, aes(x = indice, y = pc2))+
+  geom_line(linewidth = 0.4)+
+  labs(title = "cruptura do dinamismo musical",
+       subtitle = "sem outliers", 
+       x = "músicas (índice cronológico)", 
+       y = "PC2 - dinamismo musical")+
+  
+  annotate("segment", x = 0, xend = change2_outliers, y = novos_par_change2[1],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  annotate("segment", x = change2_outliers, xend = 184, y = novos_par_change2[2],
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  
+  annotate("segment", x = change2_outliers, y = -6, yend = 3,
+           color = "tomato4", linetype = "dashed", linewidth = 0.7)+
+  
+  annotate("text", label = musicas_change2, x = 79, y = -5.8,
+           color = "tomato4", fontface = "bold")+
+  
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        axis.title = element_text(color = "grey40", size = 12, hjust = 1),
+        axis.text = element_text(color = "grey30"),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey30"))
+
+#changepoint - componete 3
+change_pc3 <- cpt.mean(scores_ordenados[,"PC3"], 
+                       method = "PELT", penalty = "MBIC")
+
+change3 <- cpts(change_pc3)
+par_change3 <- change_pc3@param.est[[1]] #parametro da mudança
+musicas_change3 <- musicas_ordem$Title[change3]
+
+ggplot(df_scores, aes(x = indice, y = pc3))+
+  geom_line()+
+  labs(title = "changepoints — PC3",
+       subtitle = "ordenado pelas músicas",
+       x = "índice cronológico", 
+       y = "PC3")+
+  annotate("segment", x = 0, xend = 184, y = par_change3,
+           color = "grey30", linewidth = 0.7, alpha = 0.7)+
+  theme_classic()+
+  theme(plot.title = element_text(color = "grey40", size = 15),
+        plot.subtitle = element_text(color = "grey40", size = 12),
+        axis.title = element_text(color = "grey30"),
+        axis.text = element_text(color = "grey30"),
+        axis.ticks = element_blank(),
+        axis.line = element_line(color = "grey30"))
+}

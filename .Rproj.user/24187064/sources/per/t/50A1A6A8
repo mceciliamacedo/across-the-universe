@@ -1,0 +1,26 @@
+{
+    "id": "50A1A6A8",
+    "path": "C:/Users/maria/OneDrive - Universidade Federal de Uberlândia/área de trabalho/beatles_tcc/across_the_universe/script.R",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "2057862676",
+    "contents": "",
+    "dirty": false,
+    "created": 1789662599656.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "502,1",
+        "scrollLine": "20"
+    },
+    "folds": "40|1|75|0|\n80|1|414|0|\n419|1|497|0|\n502|1|588|0|\n593|1|880|0|\n885|1|1049|0|\n",
+    "lastKnownWriteTime": 1789676477,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1789676477711,
+    "read_only": false,
+    "read_only_alternatives": []
+}

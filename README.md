@@ -24,7 +24,7 @@ Neste repositório encontram-se os conjuntos de dados usados e coletados, *scrip
 - 📁 dados: bases de dados utilizadas no trabalho
 - 📁 scripts: códigos R utilizados nas análises
 
-##️ Tecnologias utilizadas
+## Tecnologias utilizadas
 
 - **Linguagem:** R
 - **Principais bibliotecas:** `tidyverse`, `tidytext`, `topicmodels`, `vegan`, `mclust`, `changepoint`

@@ -19,10 +19,10 @@ Neste repositório encontram-se os conjuntos de dados usados e coletados, *scrip
 
 ## Estrutura do repositório
 
-- 📁 arquivos: produto final da pesquisa (monografia e apresentação) 
-- 📁 acessibilidade: versões acessíveis dos gráficos presentes na monografia
-- 📁 dados: bases de dados utilizadas no trabalho
-- 📁 scripts: códigos R utilizados nas análises
+- 📁 `acessibilidade`: versões acessíveis dos gráficos presentes na monografia
+- 📁 `dados`: bases de dados utilizadas no trabalho
+- 📁 `scripts`: códigos R utilizados nas análises
+- `apresentacao.html`: slides utilizados na defesa de tcc
 
 ## Tecnologias utilizadas
 
